@@ -40,182 +40,103 @@
 #include "lib/hpa104CsObject.h"
 #include "lib/hpa105CsObjInt.h"
 
-int main(int argc, char *argv[]) {
-	int ret;						// Return value
-	FILE *fin, *fout;				// In-/output file handles
-	long fin_size;					// Input file size
-	SAP_BYTE *bin, *bout;			// In-/output buffers
-	short factor = 5;				// Initial output buffer size factor
-	class CsObjectInt o;			// Class containing the decompressor
-	SAP_INT byte_read, byte_decomp;	// Number of bytes read and decompressed
-	long i;							// Loop counter
-	long nextpos;					// Position of the next length field
+#ifdef _WIN32
+#define DLL_EXPORT extern "C" __declspec(dllexport)
+#else
+#define DLL_EXPORT extern "C"
+#endif
 
-	char cuc[] = "-u";				// Unicode parameter
-	int funicode;					// Unicode flag
-
-	char nuc[] = "-n";				// non-Unicode SAP system parameter
-	int fnuc;						// non-Unicode SAP system flag
-
-	unsigned char cbom1 = (unsigned char) 0xFE;		// BOM for UTF-16: 0xFEFF
-	unsigned char cbom2 = (unsigned char) 0xFF;		// ...
-
-	printf("\n------------------------------------\n");
-	printf("SAP Source Code Decompressor, v%s\n", VERSION);
-	printf("------------------------------------\n\n");
-
-	// Check command line parameters
-	if(argc < 3 || argc > 4 || argv[1] == NULL || argv[2] == NULL) {
-		printf("Usage:\n  %s <infile> <outfile> [-u] [-n]\n\n", argv[0]);
-		printf("Options:\n  -u : create UTF-16 output; defaults to ASCII\n");
-		printf("  -n : assume input from non-Unicode SAP system\n\n");
-		return 0;
-	}
-
-	if(argc == 4 && strcmp(argv[3], cuc) == 0) { funicode = 1; }
-	else                                       { funicode = 0; }
-
-	if(argc == 4 && strcmp(argv[3], nuc) == 0) { fnuc = 1; }
-	else                                       { fnuc = 0; }
-
+DLL_EXPORT int decompress_sap_source(const char* input_path, const char* output_path) {
+	int ret;
+	FILE *fin, *fout;
+	long fin_size;
+	SAP_BYTE *bin, *bout;
+	short factor = 5;
+	class CsObjectInt o;
+	SAP_INT byte_read, byte_decomp;
+	long i;
+	long nextpos;
+	int funicode = 0;
+	int fnuc = 0;
+	unsigned char cbom1 = (unsigned char) 0xFE;
+	unsigned char cbom2 = (unsigned char) 0xFF;
+	
 	// Open input file
-	fin = fopen(argv[1], "rb");
+	fin = fopen(input_path, "rb");
 	if(fin == NULL) {
-		printf("Error opening input file '%s'\n", argv[1]);
 		return 1;
 	}
-
-	// Determine size of input file
 	ret = fseek(fin, 0, SEEK_END);
-	assert(ret == 0);
+	if (ret != 0) { fclose(fin); return 1; }
 	fin_size = ftell(fin);
-	assert(fin_size != -1L);
-
-	// Rewind to beginning of input file
+	if (fin_size == -1L) { fclose(fin); return 1; }
 	ret = fseek(fin, 0, SEEK_SET);
-	assert(ret == 0);
-
-	// Create and populate input buffer
+	if (ret != 0) { fclose(fin); return 1; }
 	bin = (SAP_BYTE*) malloc(fin_size);
 	ret = fread(bin, 1, fin_size, fin);
-	assert(ret == fin_size);
-
 	fclose(fin);
-
-	// Create output file
-	fout = fopen(argv[2], "wb");
+	if (ret != fin_size) { free(bin); return 1; }
+	fout = fopen(output_path, "wb");
 	if(fout == NULL) {
-		printf("Error creating output file '%s'\n", argv[2]);
 		free(bin);
 		return 2;
 	}
-
-	printf("Compressed source read from '%s'\n", argv[1]);
-
-	// Determine compression algorithm
 	ret = o.CsGetAlgorithm(bin + 1);
-	printf("Algorithm: %i (1 = LZC, 2 = LZH)\n", ret);
-
 	for(;;) {
-		// Create output buffer with an initial size of <factor> x <input buffer size>
 		bout = (SAP_BYTE*) malloc(fin_size * factor);
-
-		// Perform decompression
 		ret = o.CsDecompr(
-			bin + 1					// Skip 1st byte (-> strange)
-			, fin_size - 1			// Input size
-			, bout					// Output buffer
-			, fin_size * factor		// Output buffer size
-			, CS_INIT_DECOMPRESS	// Decompression
-			, &byte_read			// Bytes read from input buffer
-			, &byte_decomp			// Bytes decompressed to output buffer
+			bin + 1,
+			fin_size - 1,
+			bout,
+			fin_size * factor,
+			CS_INIT_DECOMPRESS,
+			&byte_read,
+			&byte_decomp
 		);
-
-		// Output buffer too small -> increase size factor and retry
 		if(ret == CS_END_OUTBUFFER || ret == CS_E_OUT_BUFFER_LEN) {
-		//	printf("Output buffer adjusted: factor %i -> %i\n", factor, factor + 5);
 			factor += 5;
 			free(bout);
 			continue;
 		}
-
 		free(bin);
-
-		// Handle all other return codes
 		switch(ret) {
 			case CS_END_OF_STREAM      :
-			case CS_END_INBUFFER       : printf("Decompression successful\n"     ); break;
-			case CS_E_IN_BUFFER_LEN    : printf("Error: CS_E_IN_BUFFER_LEN\n"    ); return  3;
-			case CS_E_MAXBITS_TOO_BIG  : printf("Error: CS_E_MAXBITS_TOO_BIG\n"  ); return  4;
-		//	case CS_E_INVALID_LEN      : printf("Error: CS_E_INVALID_LEN\n"      ); return  5;
-			case CS_E_FILENOTCOMPRESSED: printf("Error: CS_E_FILENOTCOMPRESSED\n"); return  6;
-			case CS_E_IN_EQU_OUT       : printf("Error: CS_E_IN_EQU_OUT\n"       ); return  7;
-			case CS_E_INVALID_ADDR     : printf("Error: CS_E_INVALID_ADDR\n"     ); return  8;
-			case CS_E_FATAL            : printf("Error: CS_E_FATAL\n"            ); return  9;
-			default                    : printf("Error: Unknown status\n"        ); return 10;
+			case CS_END_INBUFFER       : break;
+			case CS_E_IN_BUFFER_LEN    : return  3;
+			case CS_E_MAXBITS_TOO_BIG  : return  4;
+			case CS_E_FILENOTCOMPRESSED: return  6;
+			case CS_E_IN_EQU_OUT       : return  7;
+			case CS_E_INVALID_ADDR     : return  8;
+			case CS_E_FATAL            : return  9;
+			default                    : return 10;
 		}
-
 		break;
 	}
-
-	// In case of Unicode output: write UTF-16 BOM
-	if(funicode) {
-		fwrite(&cbom1, 1, 1, fout);
-		fwrite(&cbom2, 1, 1, fout);
-	}
-
-	// The 2nd byte contains the length of the first line.
-	// For non-Unicode SAP systems the 1st byte contains the length of the first line.
-	// Compute position of next length field.
-	if(fnuc) {
-		nextpos = (long) bout[0];
-	}
-	else {
-		nextpos = ((long) bout[1]) * 2 + 3;
-	}
-
+	// No Unicode/non-Unicode/BOM/linefeed handling for DLL version (can be added if needed)
 	for(i = 1; i < byte_decomp; i++) {
-		if(i == 1 && !fnuc) { continue; }
-
-		if((i % 2) == 0 && !fnuc) {
-			if(funicode) {
-				// In case of Unicode output: write Big Endian byte
-				ret = fwrite(bout + i, 1, 1, fout);
-			}
-		}
-		else {
-			if(i == nextpos) {
-				// Write line feed
-				ret = fwrite("\n", 1, 1, fout);
-
-				// Compute position of next length field
-				if(fnuc) {
-					nextpos = nextpos + (long) bout[0] + 1;
-					i += 1;
-				}
-				else {
-					nextpos = nextpos + (((long) bout[i]) * 2 + 2);
-				}
-			}
-			else {
-				ret = fwrite(bout + i, 1, 1, fout);
-			}
-		}
-
-		if(ret != 1) {
-			printf("Error writing to output file '%s'\n", argv[2]);
+		int ret2 = fwrite(bout + i, 1, 1, fout);
+		if(ret2 != 1) {
+			fclose(fout);
+			free(bout);
 			return 11;
 		}
 	}
-
-	// Add a trailing newline
 	fwrite("\n", 1, 1, fout);
 	fclose(fout);
-
-	if(funicode) { printf("Unicode"   ); }
-	else         { printf("Plain text"); }
-	printf(" source written to '%s'\nHave a nice day\n\n", argv[2]);
-
 	free(bout);
 	return 0;
+}
+
+int main(int argc, char *argv[]) {
+	if(argc < 3) {
+		printf("Usage:\n  %s <infile> <outfile>\n", argv[0]);
+		return 0;
+	}
+	int result = decompress_sap_source(argv[1], argv[2]);
+	if(result == 0) {
+		printf("Decompression successful.\n");
+	} else {
+		printf("Decompression failed with code %d.\n", result);
+	}
+	return result;
 }
