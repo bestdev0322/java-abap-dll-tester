@@ -1,0 +1,333 @@
+REPORT Z_CHECK_DISPLAY_ROLES_V2.                                                     
+                                                                                     
+TABLES: AGR_1251.                                                                    
+TYPE-POOLS: SLIS.                                                                    
+                                                                                     
+*----------------------------------------------------------------------*             
+* Authority-checks                                                                   
+*----------------------------------------------------------------------*             
+AUTHORITY-CHECK OBJECT 'S_TABU_DIS'                                                  
+  ID 'ACTVT' FIELD '03'                                                              
+  ID 'DICBERCLS' FIELD 'SS'.                                                         
+IF sy-subrc <> 0.                                                                    
+  MESSAGE 'No authorization for display access with authorization group SS' TYPE 'E'.
+ENDIF.                                                                               
+                                                                                     
+*----------------------------------------------------------------------*             
+* Selection Screen                                                                   
+*----------------------------------------------------------------------*             
+SELECTION-SCREEN BEGIN OF BLOCK B1 WITH FRAME TITLE TEXT-001.                        
+  SELECT-OPTIONS: S_ROLE FOR AGR_1251-AGR_NAME OBLIGATORY.                           
+  PARAMETERS: P_FILE TYPE STRING OBLIGATORY.                                         
+SELECTION-SCREEN END OF BLOCK B1.                                                    
+                                                                                     
+*----------------------------------------------------------------------*             
+* Types                                                                              
+*----------------------------------------------------------------------*             
+TYPES: BEGIN OF ty_csv_upload,                                                       
+         object TYPE agr_1251-object,                                                
+         field  TYPE agr_1251-field,                                                 
+         value  TYPE agr_1251-low,                                                   
+       END OF ty_csv_upload,                                                         
+                                                                                     
+       BEGIN OF ty_result,                                                           
+         agr_name       TYPE agr_1251-agr_name,                                      
+         object         TYPE agr_1251-object,                                        
+         field          TYPE agr_1251-field,                                         
+         current_value  TYPE agr_1251-low,                                           
+         allowed_values TYPE string,                                                 
+       END OF ty_result.                                                             
+                                                                                     
+*----------------------------------------------------------------------*             
+* Global Data                                                                        
+*----------------------------------------------------------------------*             
+DATA: gt_agr1251  TYPE SORTED TABLE OF agr_1251                                      
+                  WITH NON-UNIQUE KEY object field low,                              
+      gt_upload   TYPE SORTED TABLE OF ty_csv_upload                                 
+                  WITH NON-UNIQUE KEY field object value,                            
+      gt_result   TYPE STANDARD TABLE OF ty_result,                                  
+      gt_fieldcat TYPE slis_t_fieldcat_alv.                                          
+                                                                                     
+*----------------------------------------------------------------------*             
+* Initialization                                                                     
+*----------------------------------------------------------------------*             
+INITIALIZATION.                                                                      
+  AUTHORITY-CHECK OBJECT 'S_PROGRAM'                                                 
+    ID 'P_GROUP' FIELD 'ZROLE'                                                       
+    ID 'P_ACTION' FIELD 'SHOW'.                                                      
+  IF sy-subrc <> 0.                                                                  
+    MESSAGE 'No authorization to display role data' TYPE 'E'.                        
+  ENDIF.                                                                             
+                                                                                     
+*----------------------------------------------------------------------*             
+* Event Handlers                                                                     
+*----------------------------------------------------------------------*             
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.                                     
+  " Authority check for file upload                                                  
+  AUTHORITY-CHECK OBJECT 'S_GUI'                                                     
+    ID 'ACTVT' FIELD '36'.                                                           
+  IF sy-subrc <> 0.                                                                  
+    MESSAGE 'No authorization for file upload' TYPE 'E'.                             
+  ENDIF.                                                                             
+                                                                                     
+  PERFORM file_selection.                                                            
+                                                                                     
+*----------------------------------------------------------------------*             
+* Main Processing                                                                    
+*----------------------------------------------------------------------*             
+START-OF-SELECTION.                                                                  
+  " Check authorization for role display again at execution                          
+  AUTHORITY-CHECK OBJECT 'S_PROGRAM'                                                 
+    ID 'P_GROUP' FIELD 'ZROLE'                                                       
+    ID 'P_ACTION' FIELD 'SHOW'.                                                      
+  IF sy-subrc <> 0.                                                                  
+    MESSAGE 'No authorization to display role data' TYPE 'E'.                        
+  ENDIF.                                                                             
+                                                                                     
+  PERFORM: upload_csv,                                                               
+           get_role_values,                                                          
+           check_auth_values,                                                        
+           display_result.                                                           
+                                                                                     
+*&---------------------------------------------------------------------*             
+*& Form FILE_SELECTION                                                               
+*&---------------------------------------------------------------------*             
+FORM file_selection.                                                                 
+  DATA: lt_filetable TYPE filetable,                                                 
+        lv_rc        TYPE i.                                                         
+                                                                                     
+  CALL METHOD cl_gui_frontend_services=>file_open_dialog                             
+    EXPORTING                                                                        
+      window_title      = 'Select CSV File'                                          
+      default_extension = 'CSV'                                                      
+      file_filter       = 'CSV Files (*.csv)|*.CSV|'                                 
+    CHANGING                                                                         
+      file_table        = lt_filetable                                               
+      rc                = lv_rc                                                      
+    EXCEPTIONS                                                                       
+      OTHERS           = 1.                                                          
+                                                                                     
+  IF sy-subrc = 0 AND lv_rc = 1.                                                     
+    READ TABLE lt_filetable INTO p_file INDEX 1.                                     
+  ENDIF.                                                                             
+ENDFORM.                                                                             
+                                                                                     
+*&---------------------------------------------------------------------*             
+*& Form UPLOAD_CSV                                                                   
+*&---------------------------------------------------------------------*             
+FORM upload_csv.                                                                     
+  DATA: lt_csv    TYPE TABLE OF string,                                              
+        lv_csv    TYPE string,                                                       
+        ls_upload TYPE ty_csv_upload.                                                
+                                                                                     
+  DATA: lv_filename TYPE string.                                                     
+                                                                                     
+  lv_filename = p_file.                                                              
+                                                                                     
+  CALL METHOD cl_gui_frontend_services=>gui_upload                                   
+    EXPORTING                                                                        
+      filename                = lv_filename                                          
+    CHANGING                                                                         
+      data_tab               = lt_csv                                                
+    EXCEPTIONS                                                                       
+      file_open_error        = 1                                                     
+      file_read_error        = 2                                                     
+      no_batch               = 3                                                     
+      gui_refuse_filetransfer = 4                                                    
+      invalid_type           = 5                                                     
+      no_authority           = 6                                                     
+      unknown_error          = 7                                                     
+      bad_data_format        = 8                                                     
+      header_not_allowed     = 9                                                     
+      separator_not_allowed  = 10                                                    
+      header_too_long        = 11                                                    
+      unknown_dp_error       = 12                                                    
+      access_denied          = 13                                                    
+      dp_out_of_memory      = 14                                                     
+      disk_full             = 15                                                     
+      dp_timeout            = 16                                                     
+      OTHERS                = 17.                                                    
+                                                                                     
+  IF sy-subrc <> 0.                                                                  
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno                                
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.                                
+  ENDIF.                                                                             
+                                                                                     
+  DELETE lt_csv INDEX 1.  " Remove header                                            
+                                                                                     
+  LOOP AT lt_csv INTO lv_csv.                                                        
+    CLEAR ls_upload.                                                                 
+    SPLIT lv_csv AT ',' INTO: ls_upload-object                                       
+                              ls_upload-field                                        
+                              ls_upload-value.                                       
+                                                                                     
+    CONDENSE: ls_upload-object,                                                      
+              ls_upload-field,                                                       
+              ls_upload-value.                                                       
+                                                                                     
+    INSERT ls_upload INTO TABLE gt_upload.                                           
+  ENDLOOP.                                                                           
+                                                                                     
+  IF gt_upload IS INITIAL.                                                           
+    MESSAGE 'No data found in CSV file' TYPE 'E'.                                    
+  ENDIF.                                                                             
+ENDFORM.                                                                             
+                                                                                     
+*&---------------------------------------------------------------------*             
+*& Form GET_ROLE_VALUES                                                              
+*&---------------------------------------------------------------------*             
+FORM get_role_values.                                                                
+  " Check authorization for each role                                                
+*  LOOP AT s_role.                                                                   
+*    AUTHORITY-CHECK OBJECT 'S_TABU_NAM'                                             
+*      ID 'TABLE' FIELD 'AGR_1251'                                                   
+*      ID 'ACTVT' FIELD '03'.                                                        
+*    IF sy-subrc <> 0.                                                               
+*      MESSAGE 'No authorization to read role data' TYPE 'E'.                        
+*    ENDIF.                                                                          
+*  ENDLOOP.                                                                          
+                                                                                     
+  PERFORM check_auth_roles.                                                          
+                                                                                     
+  SELECT *                                                                           
+    FROM agr_1251                                                                    
+    INTO TABLE @gt_agr1251                                                           
+    WHERE agr_name IN @s_role                                                        
+      AND deleted = @space.                                                          
+                                                                                     
+  IF sy-subrc <> 0.                                                                  
+    MESSAGE 'No role data found' TYPE 'E'.                                           
+  ENDIF.                                                                             
+                                                                                     
+  " Remove organizational values                                                     
+  DELETE gt_agr1251 WHERE low CP '$*'.                                               
+ENDFORM.                                                                             
+                                                                                     
+*&---------------------------------------------------------------------*             
+*& Form CHECK_AUTH_VALUES                                                            
+*&---------------------------------------------------------------------*             
+FORM check_auth_values.                                                              
+  DATA: ls_result  TYPE ty_result,                                                   
+        ls_upload  TYPE ty_csv_upload,                                               
+        lt_allowed TYPE TABLE OF ty_csv_upload,                                      
+        lv_found   TYPE abap_bool.                                                   
+                                                                                     
+  LOOP AT gt_agr1251 ASSIGNING FIELD-SYMBOL(<ls_role>).                              
+    CLEAR: lt_allowed, ls_result.                                                    
+                                                                                     
+    " Get all allowed values for this field                                          
+    LOOP AT gt_upload INTO ls_upload                                                 
+         WHERE field = <ls_role>-field                                               
+           AND ( object = <ls_role>-object                                           
+             OR object = '*' ).                                                      
+      APPEND ls_upload TO lt_allowed.                                                
+    ENDLOOP.                                                                         
+                                                                                     
+    CHECK lt_allowed IS NOT INITIAL.                                                 
+                                                                                     
+    IF <ls_role>-low = '*' OR <ls_role>-low IS INITIAL.                              
+      " Wildcard values should be restricted                                         
+      MOVE-CORRESPONDING <ls_role> TO ls_result.                                     
+    ELSE.                                                                            
+      " Check specific values against allowed list                                   
+      lv_found = abap_false.                                                         
+      LOOP AT lt_allowed INTO ls_upload.                                             
+        IF <ls_role>-low = ls_upload-value.                                          
+          lv_found = abap_true.                                                      
+          EXIT.                                                                      
+        ENDIF.                                                                       
+      ENDLOOP.                                                                       
+                                                                                     
+      CHECK lv_found = abap_false.                                                   
+      MOVE-CORRESPONDING <ls_role> TO ls_result.                                     
+    ENDIF.                                                                           
+                                                                                     
+    " Build result entry                                                             
+    ls_result-current_value = <ls_role>-low.                                         
+                                                                                     
+    LOOP AT lt_allowed INTO ls_upload.                                               
+      IF ls_result-allowed_values IS INITIAL.                                        
+        ls_result-allowed_values = ls_upload-value.                                  
+      ELSE.                                                                          
+        CONCATENATE ls_result-allowed_values ls_upload-value                         
+          INTO ls_result-allowed_values SEPARATED BY ', '.                           
+      ENDIF.                                                                         
+    ENDLOOP.                                                                         
+                                                                                     
+    APPEND ls_result TO gt_result.                                                   
+  ENDLOOP.                                                                           
+                                                                                     
+  SORT gt_result BY agr_name object field.                                           
+ENDFORM.                                                                             
+                                                                                     
+*&---------------------------------------------------------------------*             
+*& Form DISPLAY_RESULT                                                               
+*&---------------------------------------------------------------------*             
+FORM display_result.                                                                 
+  DATA: ls_layout TYPE slis_layout_alv.                                              
+                                                                                     
+  PERFORM build_fieldcat.                                                            
+                                                                                     
+  ls_layout-zebra = abap_true.                                                       
+  ls_layout-colwidth_optimize = abap_true.                                           
+                                                                                     
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'                                             
+    EXPORTING                                                                        
+      is_layout   = ls_layout                                                        
+      it_fieldcat = gt_fieldcat                                                      
+    TABLES                                                                           
+      t_outtab    = gt_result                                                        
+    EXCEPTIONS                                                                       
+      others      = 1.                                                               
+ENDFORM.                                                                             
+                                                                                     
+*&---------------------------------------------------------------------*             
+*& Form BUILD_FIELDCAT                                                               
+*&---------------------------------------------------------------------*             
+FORM build_fieldcat.                                                                 
+  DATA ls_fieldcat TYPE slis_fieldcat_alv.                                           
+                                                                                     
+  DEFINE add_field.                                                                  
+    CLEAR ls_fieldcat.                                                               
+    ls_fieldcat-fieldname = &1.                                                      
+    ls_fieldcat-seltext_l = &2.                                                      
+    ls_fieldcat-outputlen = &3.                                                      
+    APPEND ls_fieldcat TO gt_fieldcat.                                               
+  END-OF-DEFINITION.                                                                 
+                                                                                     
+  add_field:                                                                         
+    'AGR_NAME'       'Role Name'          20,                                        
+    'OBJECT'         'Auth Object'        15,                                        
+    'FIELD'          'Field Name'         15,                                        
+    'CURRENT_VALUE'  'Current Value'      15,                                        
+    'ALLOWED_VALUES' 'Allowed Values'     50.                                        
+ENDFORM.                                                                             
+*&---------------------------------------------------------------------*             
+*&      Form  CHECK_AUTH_ROLES                                                       
+*&---------------------------------------------------------------------*             
+*       text                                                                         
+*----------------------------------------------------------------------*             
+*  -->  p1        text                                                               
+*  <--  p2        text                                                               
+*----------------------------------------------------------------------*             
+FORM CHECK_AUTH_ROLES .                                                              
+  TYPES: BEGIN OF ty_agr,                                                            
+           agr_name TYPE agr_define-agr_name,                                        
+         END OF ty_agr.                                                              
+                                                                                     
+  DATA: lt_agr TYPE TABLE OF ty_agr.                                                 
+                                                                                     
+  SELECT agr_name                                                                    
+    INTO TABLE lt_agr                                                                
+    FROM agr_define                                                                  
+    WHERE agr_name IN s_role.                                                        
+                                                                                     
+  LOOP AT lt_agr ASSIGNING FIELD-SYMBOL(<ls_agr>).                                   
+    AUTHORITY-CHECK OBJECT 'S_USER_AGR'                                              
+             ID 'ACT_GROUP' FIELD <ls_agr>-agr_name                                  
+             ID 'ACTVT' FIELD '03'.                                                  
+    IF sy-subrc <> 0.                                                                
+      MESSAGE 'No authorization to view roles' TYPE 'E'.                             
+    ENDIF.                                                                           
+  ENDLOOP.                                                                           
+ENDFORM.                                                                             
